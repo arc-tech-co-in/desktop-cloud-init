@@ -1,0 +1,4 @@
+instance-id: ubuntu-desktop
+local-hostname: localhost
+provisioner: usb-nocloud-net
+environment: dev

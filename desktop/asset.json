@@ -1,0 +1,16 @@
+{
+    "A7EA0012": {
+        "username": "srisha",
+        "groups": [
+            "sudo",
+            "docker"
+        ]
+    },
+    "A7EA0013": {
+        "username": "rajesh",
+        "groups": [
+            "sudo",
+            "docker"
+        ]
+    }
+}

@@ -1,0 +1,160 @@
+preserve-hostname: false
+package_update: true
+package_upgrade: false
+packages:
+    - curl
+    - git
+    - git-lfs
+    - openssh-server
+bootcmd:
+    - |
+        set -e
+
+        # 1) Read asset ID
+        ASSET="$(cat /sys/class/dmi/id/chassis_asset_tag 2>/dev/null || true)"
+        if [ -z "$ASSET" ] || [ "$ASSET" = "Not Specified" ]; then
+          ASSET="unknown-asset"
+        fi
+
+        # 2) Normalize hostname from asset id
+        HN="$(echo "$ASSET" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9-')"
+        if [ -n "$HN" ] && [ "$HN" != "unknown-asset" ]; then
+          hostnamectl set-hostname "$HN"
+        fi
+
+        # 3) Fetch mapping.json (static file hosted on GitHub Pages)
+        ASSET_URL="https://github.io/arc-tech-co-in/desktop-cloud-init/desktop/asset.json"
+        ASSET_JSON="$(curl -fsSL "$ASSET_URL" || true)"
+
+        # 4) Use python (present on Ubuntu) to read mapping and extract username/groups/keys
+        python3 - <<'PY'
+        import json, os, subprocess, sys
+
+        asset = os.environ.get("ASSET", "unknown-asset")
+        ASSET_JSON = os.environ.get("ASSET_JSON", "")
+
+        def sh(*args):
+            subprocess.run(args, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # Defaults if asset isn't mapped
+        user = f"user-{''.join([c for c in asset if c.isalnum()])[:8].lower()}" or "user-default"
+        groups = ["sudo"]
+        keys = []
+
+        try:
+            data = json.loads(ASSET_JSON) if ASSET_JSON else {}
+            entry = data.get(asset)
+            if isinstance(entry, dict):
+                user = entry.get("username", user)
+                groups = entry.get("groups", groups)
+                keys = entry.get("ssh_keys", keys) or []
+        except Exception:
+            pass
+
+        # Create user if missing
+        sh("id", user)
+        if subprocess.call(["id", user], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) != 0:
+            sh("useradd", "-m", "-s", "/bin/bash", user)
+
+        # Add groups
+        for g in groups:
+            sh("groupadd", "-f", g)
+            sh("usermod", "-aG", g, user)
+
+        # SSH keys (optional)
+        if keys:
+            ssh_dir = f"/home/{user}/.ssh"
+            sh("mkdir", "-p", ssh_dir)
+            auth = f"{ssh_dir}/authorized_keys"
+            with open(auth, "a", encoding="utf-8") as f:
+                for k in keys:
+                    f.write(k.strip() + "\n")
+            sh("chown", "-R", f"{user}:{user}", ssh_dir)
+            sh("chmod", "700", ssh_dir)
+            sh("chmod", "600", auth)
+
+        PY
+
+        # Pass env into python
+        # (cloud-init runs bootcmd in /bin/sh, so export for python)
+        export ASSET="$ASSET"
+        export ASSET_JSON="$ASSET_JSON"
+
+write_files:
+    - path: /usr/local/sbin/install-devtools.sh
+      permissions: "0755"
+      content: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+
+        log(){ echo "[$(date -Is)] $*"; }
+
+        # -------------------------
+        # bun (vendor command)
+        # -------------------------
+        if ! command -v bun >/dev/null 2>&1; then
+          log "Installing bun..."
+          export BUN_INSTALL="/opt/bun"
+          mkdir -p "$BUN_INSTALL"
+          curl -fsSL https://bun.com/install | bash
+          ln -sf /opt/bun/bin/bun /usr/local/bin/bun
+
+          cat >/etc/profile.d/bun.sh <<'EOF'
+        export BUN_INSTALL=/opt/bun
+        export PATH="$BUN_INSTALL/bin:$PATH"
+        EOF
+        else
+          log "bun already installed: $(bun --version || true)"
+        fi
+
+        # -------------------------
+        # uv (vendor command)
+        # -------------------------
+        if ! command -v uv >/dev/null 2>&1; then
+          log "Installing uv..."
+          curl -LsSf https://astral.sh/uv/install.sh | env \
+            UV_INSTALL_DIR="/usr/local/bin" \
+            UV_UNMANAGED_INSTALL="1" \
+            sh
+        else
+          log "uv already installed: $(uv --version || true)"
+        fi
+
+        # -------------------------
+        # VS Code (.deb)
+        # -------------------------
+        if ! command -v code >/dev/null 2>&1; then
+          log "Installing VS Code..."
+          tmp="$(mktemp -d)"
+          cd "$tmp"
+          wget -qO vscode.deb "https://code.visualstudio.com/sha/download?build=stable&os=linux-deb-x64"
+          apt-get update
+          apt-get install -y ./vscode.deb
+          cd /
+          rm -rf "$tmp"
+        else
+          log "VS Code already installed."
+        fi
+
+        # -------------------------
+        # PowerShell (GitHub release .deb you provided)
+        # -------------------------
+        if ! command -v pwsh >/dev/null 2>&1; then
+          log "Installing PowerShell 7.5.4..."
+          URL="https://github.com/PowerShell/PowerShell/releases/download/v7.5.4/powershell_7.5.4-1.deb_amd64.deb"
+          tmp="$(mktemp -d)"
+          cd "$tmp"
+          wget -qO powershell.deb "$URL"
+          apt-get update
+          apt-get install -y ./powershell.deb
+          cd /
+          rm -rf "$tmp"
+        else
+          log "PowerShell already installed: $(pwsh -NoLogo -NoProfile -Command '$PSVersionTable.PSVersion.ToString()' || true)"
+        fi
+
+        log "All requested tools processed."
+
+runcmd:
+    - [ bash, -lc, "/usr/local/sbin/install-devtools.sh" ]

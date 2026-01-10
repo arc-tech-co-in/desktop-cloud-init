@@ -22,9 +22,13 @@ bootcmd:
           hostnamectl set-hostname "$HN"
         fi
 
-        # 3) Fetch mapping.json (static file hosted on GitHub Pages)
-        ASSET_URL="https://github.io/arc-tech-co-in/desktop-cloud-init/desktop/asset.json"
+        # 3) Fetch mapping.json (static file hosted on GitHub)
+        ASSET_URL="https://raw.githubusercontent.com/arc-tech-co-in/desktop-cloud-init/main/desktop/asset.json"
         ASSET_JSON="$(curl -fsSL "$ASSET_URL" || true)"
+
+        # Pass environment variables to Python script
+        export ASSET="$ASSET"
+        export ASSET_JSON="$ASSET_JSON"
 
         # 4) Use python (present on Ubuntu) to read mapping and extract username/groups/keys
         python3 - <<'PY'
@@ -74,12 +78,7 @@ bootcmd:
             sh("chmod", "600", auth)
 
         PY
-
-        # Pass env into python
-        # (cloud-init runs bootcmd in /bin/sh, so export for python)
-        export ASSET="$ASSET"
-        export ASSET_JSON="$ASSET_JSON"
-
+        
 write_files:
     - path: /usr/local/sbin/install-devtools.sh
       permissions: "0755"
